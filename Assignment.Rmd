@@ -1,0 +1,324 @@
+---
+title: "PDA Assignment"
+output: html_document
+date: "2023-10-10"
+---
+
+## Task
+
+"Finally, we got the data from John's team we had been waiting for so long. And you know that we have this very important investor meeting on the 23rd of October where we will meet our main investors. So, the following is highly urgent. Could you explore the data and send me your results by October 20th, 5 p.m. at the latest? Please be highly creative and go beyond basic stuff. You know I like fancy and advanced stuff. Just show me why we have hired you as a data scientist! This would help me present our new data-based strategy at the investor meeting."
+
+We choose to select the Ryanair dataset, which contains data about 100000 passengers using Ryanair.
+
+## Pre-processing:
+
+We will in a first step reprocess our data
+
+Therefore in a first step we load the used packages
+
+```{r load packages, warning=FALSE, message=FALSE}
+# Please insert additional used packages here
+library( tidyverse )
+library(corrplot)
+library(tidyverse)
+library(e1071)
+library(caret)
+library(Hmisc)
+```
+
+Setup our working enviroment
+
+```{r setup}
+rm( list=ls() )
+set.seed( 42 )
+options( scipen=10000 )
+```
+
+Load the data and take a firast glance at it
+
+```{r load data}
+ryanairCSV <- read.csv("ryanair_data.csv",sep=';')
+#View(ryanairCSV)
+head(ryanairCSV)
+```
+
+As the data is quite large we will then use a statical summary to have a better look at it
+
+```{r first summary, echo=FALSE}
+summary(ryanairCSV)
+```
+
+There are some features, which just put out that their are of the type character instead of any meaningful information. In the documentation of the summary function we can find that summary is able to display information on factors, which is why we will convert our character features to factors. Also we will rename some of our longer named features
+
+```{r summarize data, echo=FALSE}
+ryanairCSV <- ryanairCSV %>%
+  mutate(
+    Gender = factor( Gender ),
+    Customer.Type = factor( Customer.Type ),
+    Type.of.Travel = factor( Type.of.Travel ),
+    Class = factor( Class ),
+    satisfaction = factor( satisfaction )) %>%
+  dplyr::rename(
+     CType = Customer.Type,
+     TravType = Type.of.Travel,
+     Distance = Flight.Distance,
+     Wifi = Inflight.wifi.service,
+     Conv_time = Departure.Arrival.time.convenient,
+     Online_booking = Ease.of.Online.booking,
+     Food = Food.and.drink,
+     Dept_delay = Departure.Delay.in.Minutes,
+     Arr_delay= Arrival.Delay.in.Minutes
+  )
+summary(ryanairCSV)
+```
+
+After interpreting the data set and the summary directly, we can deduct the following:
+
+As we see, there are multiple features that are are metrics of passenger satisfaction with different services. Additionally there are features describing the passenger, as well as details on the flight itself.
+
+We also notice: There are 2 columns with missing values; Flight.Distance and Arrival.Delay; Furthermore the feature X is just a counter and is the same as our row number. Id on the other hand seems like a counter variable with missing numbers, as it adds no noticeable value and is not mentioned in the data set documentation, will not regard it further. Quite interesting are also the features departure.delay and arrival.delay, as their median, mean and max has a very high, noticeable gap. We will investigate these features further to make an educated guess if these max values are outliers, which should not be minded going forward.
+
+### Investigate NAs
+
+We will now take a look at the data with missing values and try to find a pattern
+
+```{r, echo=FALSE}
+missingVal_df = ryanairCSV[!complete.cases(ryanairCSV), ]
+summary(missingVal_df)
+```
+
+The rows with missing values seem to be similar distributed as the rest of the data. As there are only 311 rows with missing values and our data set has 100.000 rows, only 0,3% of the data has NA's. Therefore our data quality will not really drop if remove all rows with NA's.
+
+### Investigate Outliers
+
+We will now first select the outliers and then take a look at their distribution compared to lower delay data points
+
+```{r, echo=FALSE}
+outliers_df <- ryanairCSV %>% 
+  filter( (Dept_delay > 500) | (Arr_delay > 500))
+head(outliers_df)
+```
+
+```{r, echo=FALSE}
+summary(outliers_df)
+```
+
+As their means are similar to the distribution of the whole data set, we will not remove them.
+
+### Transform Data
+
+Now we will first remove the features X and id and then remove the missing values
+
+```{r}
+cleaned_ryanair <- ryanairCSV %>%
+  select(-X, -id) %>% 
+  drop_na()
+nrow(cleaned_ryanair)
+```
+
+### Add meaningful features
+
+We will now introduce some more meaningful features to reduce the feature number for our statistical models.
+
+```{r}
+attach(cleaned_ryanair)
+added_delay <- Dept_delay + Arr_delay
+delay_dist <- added_delay / Distance
+num_satis <- (Wifi + Conv_time + Online_booking + Gate.location + Food + Online.boarding + Seat.comfort + Inflight.entertainment + On.board.service + Leg.room.service + Baggage.handling + Checkin.service + Inflight.service + Cleanliness) / 14
+
+cleaned_ryanair <- cbind(cleaned_ryanair, added_delay, delay_dist, num_satis)
+
+detach(cleaned_ryanair)
+summary(cleaned_ryanair)
+```
+
+With this our data preparation and preprocessing is finished.
+
+We will take an in depth look at the distribution of our features in our report.
+
+## Correlation
+
+### Chi^2^-Test for nominal features
+
+Schaut mal ob euch die 3 letzten feature mehr expl value geben, dann könnt ihr maybe die ganzen satisfaction features weglassen und auch die delays.
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+First we change the type of CType, Class and satisfaction column to the ordered Factor type.
+
+```{r}
+statistical_ryanair <- cleaned_ryanair
+
+statistical_ryanair$CType <- factor(statistical_ryanair$CType, levels=c("disloyal Customer", "Loyal Customer"), ordered=TRUE)
+statistical_ryanair$Class <- factor(statistical_ryanair$Class, levels=c("Eco", "Eco Plus", "Business"), ordered=TRUE)
+statistical_ryanair$satisfaction <- factor(statistical_ryanair$satisfaction, levels=c("neutral or dissatisfied", "satisfied"), ordered=TRUE)
+
+```
+
+Before we compute the correlation matrix we first do a chi^2^-Test for the relation between the travel type and the satisfaction.
+
+```{r}
+contingency_table_TravType <-statistical_ryanair %>% select(satisfaction, TravType) %>% table()
+chi_squared <- chisq.test(contingency_table_TravType)
+print(chi_squared)
+print(contingency_table_TravType)
+print(chi_squared$residuals)
+```
+
+From the chi^2^-Test we can see that there is a statistically significant correlation between the travel type and the satisfaction. We can see from the count and residuals of the chi^2^-Test that passenger who travel for business purposes are, relative to personal purposes, more satisfied. Furthermore passenger traveling for personal purposes are mainly neutral or dissatisfied. Because the travel type is only the purpose of the flight and does not include any type of features of the flight itself we should also check for correlation between the flight class and the travel type.
+
+We need to check if passengers traveling for business purposes also book better flight classes.
+
+```{r}
+contingency_table_ClassTrav <-statistical_ryanair %>% select(Class, TravType) %>% table()
+chi_squared <- chisq.test(contingency_table_ClassTrav)
+print(chi_squared)
+print(contingency_table_ClassTrav)
+print(chi_squared$residuals)
+```
+
+Here we can observe that passenger with business purposes indeed fly mostly in the business class while passengers with personal purposes fly in the economy class. Assuming that the business class has higher standards in most aspects of the data set, e.g. cleanliness, seat comfort, food etc., this could explain why passengers with business purposes are more often satisfied.
+
+To support the thesis that the class correlates to the satisfaction we do another chi^2^-Test between the satisfaction and the flight class.
+
+```{r}
+contingency_table_ClassTrav <-statistical_ryanair %>% select(satisfaction, Class) %>% table()
+chi_squared <- chisq.test(contingency_table_ClassTrav)
+print(chi_squared)
+print(contingency_table_ClassTrav)
+print(chi_squared$residuals)
+```
+
+As expected passengers booking the business class are more likely to be satisfied and passengers booking the economy and economy plus class.
+
+Now we will check if there is a correlation between gender and the satisfaction.
+
+```{r}
+contingency_table_Gender <-statistical_ryanair %>% select(satisfaction, Gender) %>% table()
+chi_squared <- chisq.test(contingency_table_Gender)
+print(chi_squared)
+print(contingency_table_Gender)
+print(chi_squared$residuals)
+```
+
+We can see from the p-value that even taking a significance level of $a=0.01$ that $p<a$. So statistically there could be a relation between gender and the satisfaction of the passenger but looking at the contingency table the difference is not as obvious as the class and satisfaction or the travel type and satisfaction.
+
+### Correlation between all ordinal and numeric feastures
+
+First we select all features relevant for the correlation matrix.
+
+```{r}
+statistical_ryanair <- mutate_if(statistical_ryanair, is.factor, as.numeric)
+statistical_ryanair <- statistical_ryanair %>% select(CType:Age,Class:num_satis)
+```
+
+Afterwards we plot the correlation matrix as a correlation plot.
+
+```{r}
+cor_matrix <- rcorr(as.matrix(statistical_ryanair))
+corrplot(cor_matrix$r, type = "upper", order = "hclust", 
+         tl.col = "black",tl.cex = 0.7, tl.srt = 90)
+```
+
+From the correlation plot we can see that there is positive correlation between the overall satisfaction and the satisfaction level of the other features. Furthermore we can see a positive correlation between in-flight entertainment, food, seat comfort and cleanliness. A hypothesis could be that the four features all can be grouped into the satisfaction of the flight itself meaning it is more likely if the service in one of the features is lacking the service in the other three features is also affected. For example if the seats are dirty the passengers satisfaction level for both cleanliness and seat comfort could be negatively impacted. Another hypothesis could be that the passengers which put great importance in one of the features also put great importance in the other similar features.
+
+We can further look at the correlation between the satisfaction and all other features.
+
+```{r}
+satisfaction_cor <- cor(x=statistical_ryanair$satisfaction,y=statistical_ryanair, method = "pearson")
+satisfaction_cor_df <- data.frame(t(satisfaction_cor))
+colnames(satisfaction_cor_df) <- c("satisfaction_correlation")
+satisfaction_cor_df <- satisfaction_cor_df %>% arrange(desc(satisfaction_correlation))
+satisfaction_cor_df
+
+```
+
+From the table we can read that the arrival and departure delay negatively correlate to the satisfaction the most. Also it is interesting to note that the online boarding satisfaction level impacts the overall satisfaction the most, even more than the mean of all rating features combined. The flight class has the second biggest correlation which could be explained through the overall higher standard of the flight.
+
+**Der folgende Teil ist noch nicht ganz fertig.** Bin mir noch nicht sicher, ob man die P-Values auch darstellen und erklären soll, also wie statistisch signifikant die Korrelation ist. Die Tabelle ist viel zu lang, um da einen richtigen Überblick zu bekommen.
+
+```{r}
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+print(flattenCorrMatrix(cor_matrix$r, cor_matrix$P))
+```
+
+## Statistical Modelling
+
+**Noch nicht final.**
+
+Satisfaction \~ allen satisfaction columns + class num_satis \~ allen satisfaction columns (Herausfinden -\> was den besten Effekt hat) num_satis \~ alle onboard satisfaction columns + alle outside satisfaction columns dept_delay
+
+Linear Classfier = Logistic regression (LASSO und Ridge), SVMs, NN, Decision Trees and Random Forests PCA zum reduzieren ausprobieren
+
+```{r}
+statistical_ryanair$satisfaction <- as.factor(statistical_ryanair$satisfaction)
+split_index <- createDataPartition(statistical_ryanair$Wifi, p = 0.7, list = FALSE)
+
+train_data <- statistical_ryanair[split_index, ]
+test_data <- statistical_ryanair[-split_index, ]
+
+svm_model <- svm(satisfaction ~ ., data = train_data, kernel = "linear", cachesize=4000)
+predictions <- predict(svm_model, test_data)
+accuracy <- mean(predictions == test_data$satisfaction)
+cat("Accuracy:", accuracy, "\n")
+
+confusion_matrix <- table(Actual = test_data$satisfaction, Predicted = predictions)
+print(confusion_matrix)
+```
+
+```{r}
+svm_satisfaction_classes = statistical_ryanair %>% select(CType:Class, Wifi:Cleanliness, satisfaction)
+split_index <- createDataPartition(svm_satisfaction_classes$Wifi, p = 0.7, list = FALSE)
+
+train_data <- svm_satisfaction_classes[split_index, ]
+test_data <- svm_satisfaction_classes[-split_index, ]
+
+svm_model <- svm(satisfaction ~ ., data = train_data, kernel = "linear", cachesize=8000)
+predictions <- predict(svm_model, test_data)
+accuracy <- mean(predictions == test_data$satisfaction)
+cat("Accuracy:", accuracy, "\n")
+
+confusion_matrix <- table(Actual = test_data$satisfaction, Predicted = predictions)
+print(confusion_matrix)
+```
+
+```{r}
+svm_satisfaction_class = statistical_ryanair %>% select(num_satis, Class, satisfaction)
+split_index <- createDataPartition(svm_satisfaction_class$num_satis, p = 0.7, list = FALSE)
+
+train_data <- svm_satisfaction_classes[split_index, ]
+test_data <- svm_satisfaction_classes[-split_index, ]
+
+svm_model <- svm(satisfaction ~ ., data = train_data, kernel = "linear", cachesize=4000)
+predictions <- predict(svm_model, test_data)
+accuracy <- mean(predictions == test_data$satisfaction)
+cat("Accuracy:", accuracy, "\n")
+
+confusion_matrix <- table(Actual = test_data$satisfaction, Predicted = predictions)
+print(confusion_matrix)
+```
+
+```{r}
+statistical_ryanair$satisfaction <- as.factor(statistical_ryanair$satisfaction)
+svm_satisfaction_classes = statistical_ryanair %>% select(CType:Class, Wifi:Cleanliness, satisfaction)
+split_index <- createDataPartition(svm_satisfaction_classes$Class, p = 0.2, list = FALSE)
+
+train_data <- svm_satisfaction_classes[split_index, ]
+test_data <- svm_satisfaction_classes[-split_index, ]
+
+svm_model <- svm(satisfaction ~ ., data = train_data, kernel = "linear", cachesize=4000)
+predictions <- predict(svm_model, test_data)
+accuracy <- mean(predictions == test_data$satisfaction)
+cat("Accuracy:", accuracy, "\n")
+
+confusion_matrix <- table(Actual = test_data$satisfaction, Predicted = predictions)
+print(confusion_matrix)
+```
